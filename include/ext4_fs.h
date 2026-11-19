@@ -180,6 +180,9 @@ int ext4_fs_get_inode_ref(struct ext4_fs *fs, uint32_t index,
 void ext4_fs_inode_blocks_init(struct ext4_fs *fs,
 			       struct ext4_inode_ref *inode_ref);
 
+/* Refresh the inode checksum and mark its buffer dirty without releasing it. */
+int ext4_fs_sync_inode_ref(struct ext4_inode_ref *ref);
+
 /**@brief Put reference to i-node.
  * @param ref Pointer for reference to be put back
  * @return Error code

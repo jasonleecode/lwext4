@@ -190,6 +190,32 @@ static int verify_buf(const unsigned char *b, size_t len, unsigned char c)
 	return 0;
 }
 
+/* Two long-lived handles must both see changes to the inode's EOF. */
+static bool test_seek_end_after_write(void)
+{
+	ext4_file first, second;
+	char data[6];
+	size_t count;
+	bool ok = false;
+	if (ext4_fopen(&first, "/mp/test1", "w+") != EOK)
+		return false;
+	if (ext4_fopen(&second, "/mp/test1", "r+") == EOK) {
+		ok = ext4_fwrite(&first, "AAA", 3, &count) == EOK && count == 3
+		     && ext4_fseek(&second, 0, SEEK_END) == EOK
+		     && ext4_ftell(&second) == 3
+		     && ext4_fwrite(&second, "BBB", 3, &count) == EOK && count == 3
+		     && ext4_fseek(&first, 0, SEEK_SET) == EOK
+		     && ext4_fread(&first, data, sizeof(data), &count) == EOK
+		     && count == sizeof(data) && memcmp(data, "AAABBB", 6) == 0
+		     && ext4_ftruncate(&first, 1) == EOK
+		     && ext4_fseek(&second, 0, SEEK_END) == EOK
+		     && ext4_ftell(&second) == 1;
+		ext4_fclose(&second);
+	}
+	ext4_fclose(&first);
+	return ok;
+}
+
 bool test_lwext4_file_test(uint8_t *rw_buff, uint32_t rw_size, uint32_t rw_count)
 {
 	int r;
@@ -203,6 +229,10 @@ bool test_lwext4_file_test(uint8_t *rw_buff, uint32_t rw_size, uint32_t rw_count
 
 	ext4_file f;
 
+	if (!test_seek_end_after_write()) {
+		printf("SEEK_END returned a stale inode size\n");
+		return false;
+	}
 	printf("file_test:\n");
 	printf("  rw size: %" PRIu32 "\n", rw_size);
 	printf("  rw count: %" PRIu32 "\n", rw_count);

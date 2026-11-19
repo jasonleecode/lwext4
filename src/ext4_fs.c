@@ -789,17 +789,19 @@ int ext4_fs_get_inode_ref(struct ext4_fs *fs, uint32_t index,
 	return __ext4_fs_get_inode_ref(fs, index, ref, true);
 }
 
+int ext4_fs_sync_inode_ref(struct ext4_inode_ref *ref)
+{
+	if (!ref->dirty)
+		return EOK;
+	ext4_fs_set_inode_checksum(ref);
+	return ext4_trans_set_block_dirty(ref->block.buf);
+}
+
 int ext4_fs_put_inode_ref(struct ext4_inode_ref *ref)
 {
-	/* Check if reference modified */
-	if (ref->dirty) {
-		/* Mark block dirty for writing changes to physical device */
-		ext4_fs_set_inode_checksum(ref);
-		ext4_trans_set_block_dirty(ref->block.buf);
-	}
-
-	/* Put back block, that contains i-node */
-	return ext4_block_set(ref->fs->bdev, &ref->block);
+	int r = ext4_fs_sync_inode_ref(ref);
+	int release = ext4_block_set(ref->fs->bdev, &ref->block);
+	return r != EOK ? r : release;
 }
 
 void ext4_fs_inode_blocks_init(struct ext4_fs *fs,

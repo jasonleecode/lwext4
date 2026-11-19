@@ -261,7 +261,8 @@ int ext4_get_sblock(const char *mount_point, struct ext4_sblock **sb);
 int ext4_cache_write_back(const char *path, bool on);
 
 
-/**@brief   Force cache flush.
+/**@brief   Flush cached blocks. On writable mounts without an active journal,
+ *           also checkpoint changed free-block and free-inode counts.
  *
  * @param   path Mount point.
  *

@@ -85,6 +85,8 @@ struct ext4_mountpoint {
 
 	/**@brief   Ext4 filesystem internals.*/
 	struct ext4_fs fs;
+	uint64_t synced_free_blocks;
+	uint32_t synced_free_inodes;
 
 	/**@brief   JBD fs.*/
 	struct jbd_fs jbd_fs;
@@ -435,6 +437,8 @@ int ext4_mount(const char *dev_name, const char *mount_point,
 		return r;
 	}
 
+	mp->synced_free_blocks = ext4_sb_get_free_blocks_cnt(&mp->fs.sb);
+	mp->synced_free_inodes = ext4_get32(&mp->fs.sb, free_inodes_count);
 	bd->fs = &mp->fs;
 	mp->mounted = 1;
 	return r;
@@ -905,17 +909,17 @@ static int ext4_trunc_dir(struct ext4_mountpoint *mp,
 		if (r != EOK)
 			return r;
 
-		r = ext4_trunc_inode(mp, dir->index,
-				     EXT4_DIR_DX_INIT_BCNT * block_size);
-		if (r != EOK)
-			return r;
-	} else
-#endif
-	{
-		r = ext4_trunc_inode(mp, dir->index, block_size);
-		if (r != EOK)
-			return r;
+		block_size *= EXT4_DIR_DX_INIT_BCNT;
 	}
+#endif
+	/* The chunked truncation reopens the inode by number in each
+	 * transaction. Publish the live reference before the first lookup. */
+	r = ext4_fs_sync_inode_ref(dir);
+	if (r != EOK)
+		return r;
+	r = ext4_trunc_inode(mp, dir->index, block_size);
+	if (r != EOK)
+		return r;
 
 	return ext4_fs_truncate_inode(dir, 0);
 }
@@ -1432,6 +1436,19 @@ int ext4_cache_flush(const char *path)
 
 	EXT4_MP_LOCK(mp);
 	ret = ext4_block_cache_flush(mp->fs.bdev);
+	/* Write-through mounts can outlive the guest. Once the bitmaps have
+	 * reached the device, checkpoint their totals without marking it clean. */
+	if (ret == EOK && !mp->fs.read_only && !mp->fs.jbd_journal) {
+		uint64_t blocks = ext4_sb_get_free_blocks_cnt(&mp->fs.sb);
+		uint32_t inodes = ext4_get32(&mp->fs.sb, free_inodes_count);
+		if (blocks != mp->synced_free_blocks || inodes != mp->synced_free_inodes) {
+			ret = ext4_sb_write(mp->fs.bdev, &mp->fs.sb);
+			if (ret == EOK) {
+				mp->synced_free_blocks = blocks;
+				mp->synced_free_inodes = inodes;
+			}
+		}
+	}
 	EXT4_MP_UNLOCK(mp);
 	return ret;
 }
@@ -2034,12 +2051,24 @@ int ext4_fseek(ext4_file *file, int64_t offset, uint32_t origin)
 
 		file->fpos += offset;
 		return EOK;
-	case SEEK_END:
+	case SEEK_END: {
+		/* Another open handle may have extended or truncated this inode. */
+		struct ext4_inode_ref ref;
+		EXT4_MP_LOCK(file->mp);
+		int r = ext4_fs_get_inode_ref(&file->mp->fs, file->inode, &ref);
+		if (r == EOK) {
+			file->fsize = ext4_inode_get_size(&file->mp->fs.sb, ref.inode);
+			r = ext4_fs_put_inode_ref(&ref);
+		}
+		EXT4_MP_UNLOCK(file->mp);
+		if (r != EOK)
+			return r;
 		if (offset < 0 || (uint64_t)offset > file->fsize)
 			return EINVAL;
 
 		file->fpos = file->fsize - offset;
 		return EOK;
+	}
 	}
 	return EINVAL;
 }
